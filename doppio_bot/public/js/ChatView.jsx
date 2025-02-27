@@ -26,7 +26,7 @@ const ChatView = ({ sessionID }) => {
     {
       from: "ai",
       isLoading: false,
-      content: "How can I help you?",
+      content: "Hazme una pregunta",
     },
   ]);
 
@@ -75,7 +75,7 @@ const ChatView = ({ sessionID }) => {
       maxWidth={"4xl"}
       mx={"auto"}
     >
-      <Text fontSize="xl" fontWeight={"bold"} textColor={"gray.700"}>Ask DoppioBot</Text>
+      <Text fontSize="xl" fontWeight={"bold"} textColor={"gray.700"}>Pregúntale a Cube Bot</Text>
       {/* Chat Area */}
       <Box
         width={"100%"}
@@ -107,7 +107,7 @@ const ChatView = ({ sessionID }) => {
                   setPromptMessage("");
                 }
               }}
-              placeholder="Type your message here..."
+              placeholder="Escribe tu pregunta acá..."
             />
 
             {/* Send Button */}
