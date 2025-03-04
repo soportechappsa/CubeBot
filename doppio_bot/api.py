@@ -7,6 +7,7 @@ from datetime import date
 from langchain.schema import SystemMessage
 from langdetect import detect, DetectorFactory
 from frappe import log_error 
+from typing import Optional, Dict
 from googletrans import Translator
 from frappe import get_all, db, utils
 import calendar
@@ -32,15 +33,37 @@ prompt_template = PromptTemplate(
     template_format="f-string",
 )
 
+def is_erpnext_related(prompt_message: str) -> bool:
+    """
+    Valida si la pregunta está relacionada con ERPNext.
+    Puedes usar una lista de palabras clave o un modelo de clasificación simple.
+    """
+    erpnext_keywords = [
+        "erpnext", "cliente", "factura", "venta", "compra", "inventario", 
+        "proveedor", "artículo", "pedido", "cotización", "transacción","hola",
+        "rotacion","inventario","ultima","informacion","costo","precio","ultimo","alto","ayuda",
+        "erp","sistema","datos maestros","producto","item"
+        
+    ]
+    
+    # Convertir el mensaje a minúsculas para hacer la comparación insensible a mayúsculas
+    prompt_message = prompt_message.lower()
+    
+    # Verificar si alguna palabra clave está en el mensaje
+    return any(keyword in prompt_message for keyword in erpnext_keywords)
+
 @frappe.whitelist()
 def get_chatbot_response(session_id: str, prompt_message: str) -> str:
     # Obtener API Key desde site_config
     openai_api_key = frappe.conf.get("openai_api_key")
     openai_model = get_model_from_settings()
 
+
     if not openai_api_key:
         frappe.throw("Please set `openai_api_key` in site config")
 
+    if not is_erpnext_related(prompt_message):
+        return "Lo siento, solo puedo responder preguntas relacionadas con ERPNext. ¿En qué más puedo ayudarte?"
     # Configuración del modelo LLM
     llm = OpenAI(model_name=openai_model, temperature=0, openai_api_key=openai_api_key)
 
@@ -53,7 +76,8 @@ def get_chatbot_response(session_id: str, prompt_message: str) -> str:
 
     # Definir herramientas
     tools = [update_customers, create_customer, delete_customers, get_info_customer, get_customer_stats,
-             create_sales_invoice, get_sales_stats, create_item, create_purchase_invoice, create_suppliers]
+             create_sales_invoice, get_sales_stats, create_item, create_purchase_invoice, create_suppliers,
+             get_item_stats]
 
     # Mensaje de sistema para forzar el idioma
     system_message = SystemMessage(content="Eres un asistente virtual que responde exclusivamente en español. No importa el idioma en el que te hablen, siempre debes responder en español.")
@@ -555,7 +579,7 @@ def get_sales_stats(customer: str = None) -> dict:
         
         # 4. Top productos más vendidos
         top_products = db.sql("""
-            SELECT item_code, SUM(qty) as total_qty
+            SELECT item_code, SUM(qty) as total_qty,item_name
             FROM `tabSales Invoice Item`
             WHERE parent IN (SELECT name FROM `tabSales Invoice` WHERE docstatus = 1)
             GROUP BY item_code
@@ -714,6 +738,7 @@ def create_purchase_invoice(purchase_data: str) -> str:
     except Exception as e:
         frappe.log_error(f"Error creating Purchase Invoice: {str(e)}")
 
+
 @tool
 def create_suppliers(proveedor: str) -> str:
     """
@@ -722,6 +747,9 @@ def create_suppliers(proveedor: str) -> str:
     Si no se proporciona `supplier_group`, `supplier_type`, `default_currency` o `country`, 
     se asignan valores por defecto.
     También se crea una dirección asociada al Proveedor.
+
+    :param proveedor: JSON string con los datos del proveedor.
+    :return: Mensaje de éxito o error detallado.
     """
     try:
         # Verifica si el proveedor es un JSON válido
@@ -735,13 +763,17 @@ def create_suppliers(proveedor: str) -> str:
             raise ValueError("El campo 'supplier_name' es requerido para crear el proveedor.")
 
         # Establecer valores por defecto si no se proporcionan
-        data.setdefault("supplier_group", "Distribuidor")  
-        data.setdefault("supplier_type", "Company")
-        data.setdefault("default_currency", "GTQ")  
-        data.setdefault("country", "Guatemala")  
-        data.setdefault("address_line1", "Dirección no especificada")
-        data.setdefault("city", "Ciudad de Guatemala")
-        data.setdefault("phone", "00000000")
+        defaults = {
+            "supplier_group": "Distribuidor",
+            "supplier_type": "Company",
+            "default_currency": "GTQ",
+            "country": "Guatemala",
+            "address_line1": "Dirección no especificada",
+            "city": "Ciudad de Guatemala",
+            "phone": "00000000"
+        }
+        for key, value in defaults.items():
+            data.setdefault(key, value)
 
         # Crear el proveedor
         new_supplier = frappe.get_doc({"doctype": "Supplier", **data})
@@ -750,9 +782,9 @@ def create_suppliers(proveedor: str) -> str:
         # Crear la dirección asociada al proveedor
         address_data = {
             "doctype": "Address",
-            "address_line1": data.get("address_line1"),
-            "city": data.get("city"),
-            "phone": data.get("phone"),
+            "address_line1": data["address_line1"],
+            "city": data["city"],
+            "phone": data["phone"],
             "links": [
                 {
                     "link_doctype": "Supplier",
@@ -764,14 +796,118 @@ def create_suppliers(proveedor: str) -> str:
         new_address = frappe.get_doc(address_data)
         new_address.insert()
 
-        return "done"
+        return f"Proveedor '{data['supplier_name']}' creado exitosamente."
     
+    except frappe.DuplicateEntryError as e:
+        frappe.log_error(f"Duplicate Entry Error: {str(e)}", "create_supplier")
+        return f"Error: El proveedor '{data.get('supplier_name', '')}' ya existe."
     except frappe.ValidationError as e:
         frappe.log_error(f"Validation Error: {str(e)}", "create_supplier")
-        return f"failed: Validation Error - {str(e)}"
+        return f"Error de validación: {str(e)}"
     except ValueError as e:
         frappe.log_error(f"Value Error: {str(e)}", "create_supplier")
-        return f"failed: Value Error - {str(e)}"
+        return f"Error de valor: {str(e)}"
     except Exception as e:
         frappe.log_error(f"Unexpected Error: {str(e)}", "create_supplier")
-        return f"failed: Unexpected Error - {str(e)}"
+        return f"Error inesperado: {str(e)}"
+
+@tool
+def get_item_stats(item: Optional[str] = None) -> Dict:
+    """
+    Obtiene estadísticas de un producto específico.
+
+    Args:
+        item (str): Código del producto.
+
+    Returns:
+        dict: Un diccionario con las siguientes claves:
+            - last_purchase: Última compra registrada.
+            - item_price: Precio del producto.
+            - rotation: Rotación del producto.
+            - customer_purchases: Cliente que más ha comprado el producto.
+    """
+    if not item:
+        return {"error": "El código del producto no puede ser None"}
+
+    try:
+        stats = {}
+
+        # 1. Última compra
+        ultima_compra = db.sql("""
+            SELECT b.item_code, b.item_name, b.creation, a.supplier, b.amount, b.qty 
+            FROM `tabPurchase Invoice` a 
+            INNER JOIN `tabPurchase Invoice Item` b ON b.parent = a.name 
+            WHERE a.docstatus = 1 
+            AND b.creation = (SELECT MAX(creation) FROM `tabPurchase Invoice Item`)
+        """, as_dict=True)
+        logging.debug(f"Última compra registrada: {ultima_compra}")
+        stats["last_purchase"] = ultima_compra if ultima_compra else {"error": "No se encontraron compras"}
+
+        # 2. Precio del producto
+        costo_producto = db.sql("""
+            SELECT 
+                ip.item_code AS "Código del Producto",
+                ip.price_list AS "Lista de Precios",
+                ip.price_list_rate AS "Precio",
+                ip.currency AS "Moneda"
+            FROM 
+                `tabItem Price` ip
+            WHERE 
+                ip.item_code = %s
+                AND ip.price_list = 'Standard Selling'
+            LIMIT 1
+        """, (item,), as_dict=True)
+        logging.debug(f"Precio del producto: {costo_producto}")
+        stats["item_price"] = costo_producto if costo_producto else {"error": "No se encontraron precios del producto"}
+
+        # 3. Rotación del producto
+        rotacion_producto = db.sql("""
+            SELECT 
+                sii.item_code AS "Código del Producto",
+                COUNT(sii.name) AS "Cantidad de Ventas",
+                SUM(sii.qty) AS "Total Vendido",
+                AVG(sii.qty) AS "Promedio por Venta",
+                MIN(si.posting_date) AS "Primera Venta",
+                MAX(si.posting_date) AS "Última Venta",
+                DATEDIFF(MAX(si.posting_date), MIN(si.posting_date)) AS "Días en Rango",
+                (SUM(sii.qty) / NULLIF(DATEDIFF(MAX(si.posting_date), MIN(si.posting_date)), 0)) AS "Rotación Diaria"
+            FROM 
+                `tabSales Invoice Item` sii
+            JOIN 
+                `tabSales Invoice` si ON sii.parent = si.name
+            WHERE 
+                sii.item_code = %s
+                AND si.docstatus = 1  -- Solo facturas confirmadas
+            GROUP BY 
+                sii.item_code
+        """, (item,), as_dict=True)
+        logging.debug(f"Rotación del producto: {rotacion_producto}")
+        stats["rotation"] = rotacion_producto if rotacion_producto else {"error": "No se encontraron transacciones del producto"}
+
+        # 4. Cliente que más ha comprado el producto
+        cliente = db.sql("""
+            SELECT 
+                sii.item_code AS "Código del Producto",
+                si.customer AS "Cliente",
+                SUM(sii.qty) AS "Total Comprado"
+            FROM 
+                `tabSales Invoice Item` sii
+            JOIN 
+                `tabSales Invoice` si ON sii.parent = si.name
+            WHERE 
+                sii.item_code = %s
+                AND si.docstatus = 1  -- Solo facturas confirmadas
+            GROUP BY 
+                si.customer, sii.item_code
+            ORDER BY 
+                SUM(sii.qty) DESC
+            LIMIT 1
+        """, (item,), as_dict=True)
+        logging.debug(f"Cliente que más ha comprado el producto: {cliente}")
+        stats["customer_purchases"] = cliente if cliente else {"error": "No se encontraron productos más vendidos"}
+
+        return stats
+
+    except Exception as e:
+        logging.error(f"Error en get_item_stats: {str(e)}")
+        return {"error": str(e)}
